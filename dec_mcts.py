@@ -1,167 +1,173 @@
+import random
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.cm as cm
 import threading
 import time
-import copy
-import random
 
-# Import the specific tree implementation (Algorithm 2)
-# This assumes dec_mcts_tree.py is in the same directory
-try:
-    from dec_mcts_tree import MCTSTree
-except ImportError:
-    print("CRITICAL ERROR: 'dec_mcts_tree.py' not found. This script requires the MCTS Tree implementation.")
+from dec_mcts_robot import DecMCTSRobot, GridEnvironment, DecentralizedCommunicationChannel
+
+# --- Configuration ---
+GRID_SIZE = 40
+NUM_ROBOTS = 8
+NUM_OBSTACLES = round(0.1 * GRID_SIZE * GRID_SIZE)
+NUM_REWARDS = round(0.5 * GRID_SIZE * GRID_SIZE)  # 1250 rewards
+ACTION_SET_SIZE = 10
+SIMULATION_STEPS = 25
+NUM_SAMPLES = 10
+TAU_N = 10  # Refinement steps per physical step
+BUDGET = 10  # Path depth
+ROLLOUT_BUDGET = 200  # BFS expansions
+GAMMA = 0.95
+CP = 1.0
+ALPHA = 0.1  # Gradient step size
+BETA = 10.0  # Temperature
+
+CONFIG = {
+    'GRID_SIZE': GRID_SIZE,
+    'NUM_ROBOTS': NUM_ROBOTS,
+    'ACTION_SET_SIZE': ACTION_SET_SIZE,
+    'SIMULATION_STEPS': SIMULATION_STEPS,
+    'NUM_SAMPLES': NUM_SAMPLES,
+    'TAU_N': TAU_N,
+    'BUDGET': BUDGET,
+    'ROLLOUT_BUDGET': ROLLOUT_BUDGET,
+    'GAMMA': GAMMA,
+    'CP': CP,
+    'ALPHA': ALPHA,
+    'BETA': BETA
+}
 
 
-class DecMCTSRobot(threading.Thread):
-    """
-    Implements Algorithm 1: Overview of Dec-MCTS for robot r[cite: 210].
+class SimpleLogger:
+    def __init__(self):
+        self.trajectories = {i: [] for i in range(NUM_ROBOTS)}
+        self.lock = threading.Lock()
 
-    This agent:
-    1. Maintains a persistent MCTS tree[cite: 212].
-    2. Iteratively refines the tree and probability distributions[cite: 213].
-    3. Communicates with other robots [cite: 225-227].
-    4. Executes the best action in a receding horizon fashion[cite: 198].
-    """
-
-    def __init__(self, robot_id, start_pos, env, comms, logger, config):
-        super().__init__()
-        self.id = robot_id
-        self.pos = start_pos
-        self.env = env
-        self.comms = comms
-        self.logger = logger
-        self.config = config
-        self.daemon = True  # Daemon thread ensures it dies when main simulation ends
-
-        # 1. Initialize MCTS Tree [cite: 212]
-        # The tree persists throughout the robot's lifetime
-        self.tree = MCTSTree(
-            start_state=start_pos,
-            env=env,
-            robot_id=robot_id,
-            path_limit=config['PATH_LIMIT'],  # B^r (Physical budget)
-            gamma=config['GAMMA'],
-            cp=config['CP'],
-            rollout_budget=config['ROLLOUT_BUDGET']  # Computational budget
-        )
-
-        # Local view of other robots' plans (q_n^(r))
-        self.others_distributions = {}
-
-        # The robot's current optimized domain X_hat [cite: 185]
-        self.action_set = []
-
-        # Log initial state
-        self.logger.update_trajectory(self.id, self.pos)
-
-    def select_set_of_sequences(self):
-        """
-        Algorithm 1, Line 3: SelectSetOfSequences(T) [cite: 214]
-        Updates the local domain X_hat based on the most promising nodes in the tree.
-        """
-        # In this implementation, we select the single best path found so far.
-        # (Generalized: could select top-K diverse paths)
-        best_path = self.tree.get_best_path()
-        self.action_set = [best_path]
-
-    def update_distribution(self):
-        """
-        Algorithm 1, Line 6: UpdateDistribution [cite: 222]
-        Optimizes q_n based on the tree statistics.
-        """
-        # Placeholder for Algorithm 3 (Gradient Descent).
-        # Currently implements a greedy deterministic assignment:
-        # P(best_path) = 1.0, others = 0.0
+    def log_step(self, step, rid, plan):
         pass
 
-    def transmit(self):
-        """
-        Algorithm 1, Line 7: CommunicationTransmit [cite: 225]
-        Sends the compressed plan (X_hat, q_n) to the team.
-        """
-        # Create the message
-        # We replicate the path to match ACTION_SET_SIZE for compatibility
-        paths = self.action_set * self.config['ACTION_SET_SIZE']
+    def update_trajectory(self, rid, pos):
+        with self.lock:
+            self.trajectories[rid].append(pos)
 
-        # Uniform probability if we only have one path, or specific probs otherwise
-        probs = [1.0 / len(paths)] * len(paths)
 
-        self.comms.publish(self.id, paths, probs)
+def generate_environment():
+    print(f"Generating {GRID_SIZE}x{GRID_SIZE} Grid...")
+    all_coords = [(x, y) for x in range(GRID_SIZE) for y in range(GRID_SIZE)]
 
-    def receive(self):
-        """
-        Algorithm 1, Line 8: CommunicationReceive [cite: 227]
-        Updates local cache of other robots' distributions.
-        """
-        num_robots = self.comms.get_num_robots()
-        for r_id in range(num_robots):
-            if r_id == self.id: continue
+    # Obstacles
+    obs_indices = np.random.choice(len(all_coords), NUM_OBSTACLES, replace=False)
+    obstacles = set(all_coords[i] for i in obs_indices)
 
-            # Read from the decentralized buffer
-            paths, probs = self.comms.read_other(r_id)
+    # Rewards
+    remaining_indices = list(set(range(len(all_coords))) - set(obs_indices))
+    rew_indices = np.random.choice(remaining_indices, NUM_REWARDS, replace=False)
 
-            # Only update if we received valid data
-            if paths:
-                self.others_distributions[r_id] = (paths, probs)
+    rewards = {}
+    for idx in rew_indices:
+        rewards[all_coords[idx]] = random.randint(1, 10)
 
-    def run(self):
-        """
-        Main Execution Loop.
-        Combines Algorithm 1 (Planning) with Online Execution (Replanning).
-        """
-        for step in range(self.config['SIMULATION_STEPS']):
+    return obstacles, rewards
 
-            # --- Algorithm 1: Planning Block ---
-            # Line 2: "While computation budget not met" [cite: 213]
-            # We treat PLANNING_BUDGET as the number of refinement loops per physical step
-            for _ in range(self.config['PLANNING_BUDGET']):
 
-                # Line 3: Update X_hat
-                self.select_set_of_sequences()
+def visualize_results(env, trajectories, initial_rewards):
+    fig, ax = plt.subplots(figsize=(12, 12))
+    ax.set_title("Dec-MCTS Final Trajectories")
+    ax.set_xlim(0, GRID_SIZE)
+    ax.set_ylim(0, GRID_SIZE)
 
-                # Line 4: For t_n iterations do [cite: 217]
-                # (Inner MCTS sampling loop)
-                for _ in range(self.config['NUM_SAMPLES']):
-                    # Line 5: GrowTree (Algorithm 2) [cite: 219]
-                    # This is the only point where we touch the Tree logic
-                    self.tree.grow(self.others_distributions)
+    # Obstacles
+    if env.obstacles:
+        ox, oy = zip(*env.obstacles)
+        ax.scatter(ox, oy, c='black', marker='s', s=10, alpha=0.3, label='Obstacles')
 
-                    # Line 6: Update Probabilities
-                    self.update_distribution()
+    # Rewards (Remaining vs Taken)
+    # We reconstruct taken from initial vs current env
+    taken_x, taken_y, taken_s = [], [], []
+    rem_x, rem_y, rem_s = [], [], []
 
-                    # Line 7: Broadcast Plan
-                    self.transmit()
+    for pos, val in initial_rewards.items():
+        size = val * 5  # Scale size by value
+        if pos in env.rewards:
+            rem_x.append(pos[0])
+            rem_y.append(pos[1])
+            rem_s.append(size)
+        else:
+            taken_x.append(pos[0])
+            taken_y.append(pos[1])
+            taken_s.append(size)
 
-                    # Line 8: Listen to Neighbors
-                    self.receive()
+    if rem_x:
+        ax.scatter(rem_x, rem_y, s=rem_s, c='green', alpha=0.6, label='Remaining Rewards')
+    if taken_x:
+        ax.scatter(taken_x, taken_y, s=taken_s, c='lightgray', alpha=0.4, label='Collected Rewards')
 
-                # Line 9: Cool beta (Skipped in this version)
+    # Trajectories
+    colors = cm.rainbow(np.linspace(0, 1, NUM_ROBOTS))
+    for rid, path in trajectories.items():
+        if not path: continue
+        px, py = zip(*path)
+        ax.plot(px, py, c=colors[rid], linewidth=2, alpha=0.8, label=f'R{rid}')
+        ax.scatter(px[0], py[0], c=colors[rid], marker='o', s=50, edgecolors='black')  # Start
+        ax.scatter(px[-1], py[-1], c=colors[rid], marker='^', s=80, edgecolors='black')  # End
 
-            # --- Online Execution (Receding Horizon) ---
-            # Line 10: Select best action sequence [cite: 231]
-            best_plan = self.tree.get_best_path()
+    ax.legend(loc='upper right', bbox_to_anchor=(1.15, 1))
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.show()
 
-            # LOGGING: Save the tree state for visualization
-            if self.logger:
-                tree_viz = self.tree.extract_segments()
-                self.logger.log_step(step, self.id, tree_viz, best_plan)
 
-            # EXECUTE: Move physical robot one step
-            if len(best_plan) > 1:
-                next_pos = best_plan[1]
-                self.pos = next_pos
+def run_simulation():
+    obstacles, initial_rewards = generate_environment()
+    # Deep copy rewards because environment consumes them
+    env = GridEnvironment(GRID_SIZE, obstacles, initial_rewards.copy())
+    comms = DecentralizedCommunicationChannel(NUM_ROBOTS)
+    logger = SimpleLogger()
 
-                # CRITICAL: Prune/Update Tree Root [cite: 198-199]
-                # "Online replanning... by adapting the previous search tree"
-                self.tree.advance_root(self.pos)
+    robots = []
+    print("Initializing Robots...")
+    for i in range(NUM_ROBOTS):
+        while True:
+            sx, sy = random.randint(0, GRID_SIZE - 1), random.randint(0, GRID_SIZE - 1)
+            if env.is_valid((sx, sy)): break
+        robots.append(DecMCTSRobot(i, (sx, sy), env, comms, CONFIG, logger))
+        # Log initial pos
+        logger.update_trajectory(i, (sx, sy))
 
-                # Update global state (for visualization/simulation only)
-                self.logger.update_trajectory(self.id, self.pos)
+    print(f"Starting Simulation ({SIMULATION_STEPS} steps)...")
+    start_time = time.time()
 
-                # Attempt to collect reward
-                # (Note: In a real decentralized system, the env handles this interaction)
-                val = self.env.consume_reward(self.pos)
-                if val > 0:
-                    self.logger.log_collection(self.id, self.pos, val, step)
+    threads = []
+    for r in robots:
+        r.start()
+        threads.append(r)
 
-            # Simulate processing time
-            time.sleep(0.01)
+    for t in threads:
+        t.join()
+
+    duration = time.time() - start_time
+    print(f"\nSimulation Finished in {duration:.2f}s")
+
+    # Statistics
+    total_val_start = sum(initial_rewards.values())
+    total_val_left = sum(env.rewards.values())
+    collected = total_val_start - total_val_left
+
+    print("=" * 40)
+    print("RESULTS")
+    print("=" * 40)
+    print(f"Total Available Value: {total_val_start}")
+    print(f"Total Collected Value: {collected}")
+    print(f"Percentage Collected:  {collected / total_val_start * 100:.2f}%")
+    print(f"Remaining Value:       {total_val_left}")
+
+    # Trajectory Stats
+    for rid, path in logger.trajectories.items():
+        print(f"Robot {rid}: Traveled {len(path)} steps")
+
+    visualize_results(env, logger.trajectories, initial_rewards)
+
+
+if __name__ == "__main__":
+    run_simulation()
