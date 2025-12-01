@@ -113,8 +113,6 @@ class DecMCTSRobot(threading.Thread):
     def update_distribution(self):
         """
         Algorithm 3: Update Distribution using Gradient Descent.
-        q_n(x) <-- q_n(x) - alpha * q_n(x) * (Gradient Term)
-        Gradient Term = (E[f] - E[f|x])/beta + H(q) + ln(q(x))
         """
         alpha = self.config.get('ALPHA', 0.1)
         beta = self.config.get('BETA', 1.0)
@@ -122,26 +120,17 @@ class DecMCTSRobot(threading.Thread):
         new_probs = []
 
         # 1. Calculate Expectations via Sampling
-        # E[f] = Expected Global Utility of the product distribution
-        # E[f|x^r] = Expected Global Utility if I fix my action to x^r
-
-        # We estimate these by sampling N scenarios from others
         num_mc_samples = 10
         sampled_others = []
         for _ in range(num_mc_samples):
             sampled_others.append(self.tree._sample_others(self.others_distributions))
 
         # Calculate Expected Marginal Utilities for each path in action_set
-        # E[f|x^r] approx mean( f(x^r U x_others_sample) )
         expected_utilities = []
 
         for my_path in self.action_set:
             utils = []
             for others_paths in sampled_others:
-                # Calc Utility f^r (Global Utility - Baseline)
-                # Baseline is f(empty U others), but essentially we maximize Global U.
-                # Optimization: f^r = g(x^r U others) - g(empty U others).
-                # g(empty U others) is constant for all my x^r, so maximizing g(x^r U others) is sufficient.
                 u = self.env.get_global_utility([my_path] + others_paths)
                 utils.append(u)
             expected_utilities.append(np.mean(utils))
@@ -153,10 +142,8 @@ class DecMCTSRobot(threading.Thread):
 
         for i, p in enumerate(self.action_probs):
             E_f_cond = expected_utilities[i]
-
             # Gradient term
             term = (E_f_avg - E_f_cond) / beta + entropy + np.log(p + 1e-9)
-
             # Update
             new_p = p - alpha * p * term
             new_probs.append(max(0.01, new_p))  # Clamp to avoid 0
@@ -180,9 +167,6 @@ class DecMCTSRobot(threading.Thread):
         for step in range(self.config['SIMULATION_STEPS']):
 
             # --- Algorithm 1 ---
-            # Line 2: Planning Budget (Number of refinement loops)
-            # We assume TAU_N handles the tree growth loop size
-
             # Line 3
             self.select_set_of_sequences()
 
@@ -216,7 +200,8 @@ class DecMCTSRobot(threading.Thread):
                 self.tree.advance_root(self.pos)
 
                 if self.logger:
-                    self.logger.update_trajectory(self.id, self.pos)
+                    # Log with timestamp (step)
+                    self.logger.update_trajectory(self.id, self.pos, step)
 
                 val = self.env.consume_reward(self.pos)
                 # (Optional statistics logging here)

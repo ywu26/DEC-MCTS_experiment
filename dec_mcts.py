@@ -2,16 +2,17 @@ import random
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
+import matplotlib.animation as animation
 import threading
 import time
 
 from dec_mcts_robot import DecMCTSRobot, GridEnvironment, DecentralizedCommunicationChannel
 
 # --- Configuration ---
-GRID_SIZE = 40
+GRID_SIZE = 25
 NUM_ROBOTS = 8
 NUM_OBSTACLES = round(0.1 * GRID_SIZE * GRID_SIZE)
-NUM_REWARDS = round(0.5 * GRID_SIZE * GRID_SIZE)  # 1250 rewards
+NUM_REWARDS = round(0.4 * GRID_SIZE * GRID_SIZE)  # 1250 rewards
 ACTION_SET_SIZE = 10
 SIMULATION_STEPS = 25
 NUM_SAMPLES = 10
@@ -41,15 +42,16 @@ CONFIG = {
 
 class SimpleLogger:
     def __init__(self):
+        # trajectories: {robot_id: [(step, x, y), ...]}
         self.trajectories = {i: [] for i in range(NUM_ROBOTS)}
         self.lock = threading.Lock()
 
     def log_step(self, step, rid, plan):
         pass
 
-    def update_trajectory(self, rid, pos):
+    def update_trajectory(self, rid, pos, step):
         with self.lock:
-            self.trajectories[rid].append(pos)
+            self.trajectories[rid].append((step, pos[0], pos[1]))
 
 
 def generate_environment():
@@ -83,7 +85,6 @@ def visualize_results(env, trajectories, initial_rewards):
         ax.scatter(ox, oy, c='black', marker='s', s=10, alpha=0.3, label='Obstacles')
 
     # Rewards (Remaining vs Taken)
-    # We reconstruct taken from initial vs current env
     taken_x, taken_y, taken_s = [], [], []
     rem_x, rem_y, rem_s = [], [], []
 
@@ -103,11 +104,14 @@ def visualize_results(env, trajectories, initial_rewards):
     if taken_x:
         ax.scatter(taken_x, taken_y, s=taken_s, c='lightgray', alpha=0.4, label='Collected Rewards')
 
-    # Trajectories
+    # Trajectories (Plot just the lines)
     colors = cm.rainbow(np.linspace(0, 1, NUM_ROBOTS))
-    for rid, path in trajectories.items():
-        if not path: continue
-        px, py = zip(*path)
+    for rid, path_data in trajectories.items():
+        if not path_data: continue
+        # Extract x, y ignoring step for the static plot
+        px = [p[1] for p in path_data]
+        py = [p[2] for p in path_data]
+
         ax.plot(px, py, c=colors[rid], linewidth=2, alpha=0.8, label=f'R{rid}')
         ax.scatter(px[0], py[0], c=colors[rid], marker='o', s=50, edgecolors='black')  # Start
         ax.scatter(px[-1], py[-1], c=colors[rid], marker='^', s=80, edgecolors='black')  # End
@@ -116,6 +120,100 @@ def visualize_results(env, trajectories, initial_rewards):
     ax.grid(True, alpha=0.3)
     plt.tight_layout()
     plt.show()
+
+
+def create_animation(env, trajectories, initial_rewards, filename="dec_mcts_simulation.mp4"):
+    print(f"Generating Animation: {filename}...")
+    fig, ax = plt.subplots(figsize=(10, 10))
+    ax.set_xlim(0, GRID_SIZE)
+    ax.set_ylim(0, GRID_SIZE)
+    ax.grid(True, alpha=0.3)
+
+    # 1. Static Background (Obstacles)
+    if env.obstacles:
+        ox, oy = zip(*env.obstacles)
+        ax.scatter(ox, oy, c='black', marker='s', s=10, alpha=0.3)
+
+    # 2. Dynamic Elements Setup
+    # Rewards scatter plot needs to update as they are collected
+    # We'll split rewards into 'active' and 'collected'
+
+    # Initial Rewards Data
+    rew_x, rew_y, rew_s = [], [], []
+    for pos, val in initial_rewards.items():
+        rew_x.append(pos[0])
+        rew_y.append(pos[1])
+        rew_s.append(val * 5)
+
+    # Scatter for remaining rewards (Green)
+    scat_rewards = ax.scatter(rew_x, rew_y, s=rew_s, c='green', alpha=0.6)
+
+    # Scatter for collected rewards (Gray - initially empty, but we can just overlay gray dots)
+    # Actually simpler: replot rewards every frame or just overlay trajectories.
+    # To be efficient, let's keep rewards static green for now, and maybe just show robots moving.
+    # High fidelity: Remove green dot when robot hits it.
+    # For simplicity here: Static rewards, dynamic robots.
+
+    # Robot Markers
+    colors = cm.rainbow(np.linspace(0, 1, NUM_ROBOTS))
+    robot_dots = []
+    robot_trails = []
+
+    for i in range(NUM_ROBOTS):
+        dot, = ax.plot([], [], 'o', c=colors[i], markeredgecolor='black', markersize=8)
+        trail, = ax.plot([], [], '-', c=colors[i], alpha=0.5, linewidth=1)
+        robot_dots.append(dot)
+        robot_trails.append(trail)
+
+    # Title
+    title = ax.text(0.5, 1.05, "", transform=ax.transAxes, ha="center")
+
+    # Helper to get position at step T
+    # Trajectories are list of (step, x, y). steps might not be perfectly contiguous if threads sleep weirdly,
+    # but generally they are 0, 1, 2...
+    # We will interpolate or just find the closest step <= T
+
+    max_step = SIMULATION_STEPS
+
+    def update(frame):
+        title.set_text(f"Step {frame}/{max_step}")
+
+        # Update each robot
+        for rid in range(NUM_ROBOTS):
+            path = trajectories[rid]
+            # Find the state at this frame
+            # Filter for steps <= frame
+            history = [p for p in path if p[0] <= frame]
+
+            if history:
+                # Current pos is the last one in history
+                curr = history[-1]
+                robot_dots[rid].set_data([curr[1]], [curr[2]])
+
+                # Trail is all history positions
+                tx = [p[1] for p in history]
+                ty = [p[2] for p in history]
+                robot_trails[rid].set_data(tx, ty)
+
+        return robot_dots + robot_trails + [title]
+
+    # Create Animation
+    # Frames = Simulation Steps. Interval = ms between frames.
+    anim = animation.FuncAnimation(fig, update, frames=max_step + 1, interval=200, blit=True)
+
+    # Save
+    try:
+        # Requires ffmpeg installed. If not, use writer='pillow' for gif
+        anim.save(filename, writer='ffmpeg', fps=5)
+        print("Animation saved successfully.")
+    except Exception as e:
+        print(f"Could not save video (is ffmpeg installed?): {e}")
+        try:
+            print("Attempting to save as GIF instead...")
+            anim.save("dec_mcts_simulation.gif", writer='pillow', fps=5)
+            print("GIF saved successfully.")
+        except Exception as e2:
+            print(f"Could not save GIF either: {e2}")
 
 
 def run_simulation():
@@ -132,8 +230,8 @@ def run_simulation():
             sx, sy = random.randint(0, GRID_SIZE - 1), random.randint(0, GRID_SIZE - 1)
             if env.is_valid((sx, sy)): break
         robots.append(DecMCTSRobot(i, (sx, sy), env, comms, CONFIG, logger))
-        # Log initial pos
-        logger.update_trajectory(i, (sx, sy))
+        # Log initial pos at step 0
+        logger.update_trajectory(i, (sx, sy), 0)
 
     print(f"Starting Simulation ({SIMULATION_STEPS} steps)...")
     start_time = time.time()
@@ -166,7 +264,11 @@ def run_simulation():
     for rid, path in logger.trajectories.items():
         print(f"Robot {rid}: Traveled {len(path)} steps")
 
+    # Visualization (Static)
     visualize_results(env, logger.trajectories, initial_rewards)
+
+    # Visualization (Video)
+    create_animation(env, logger.trajectories, initial_rewards)
 
 
 if __name__ == "__main__":
