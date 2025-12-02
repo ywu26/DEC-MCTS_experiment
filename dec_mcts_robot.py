@@ -184,15 +184,41 @@ class DecMCTSRobot(threading.Thread):
                 for _ in range(self.config['NUM_SAMPLES']):
                     self.tree.grow(self.others_distributions)
 
+                # Capture BEFORE optimization (steps 3 and 4 only)
+                if self.tree_visualizer and self.id == 1 and step in [15, 16]:
+                    import copy
+                    self.tree_visualizer.capture_action_distribution(
+                        robot_id=self.id,
+                        step=step,
+                        action_set=copy.deepcopy(self.action_set),
+                        action_probs=copy.deepcopy(self.action_probs),
+                        others_distributions=copy.deepcopy(self.others_distributions),
+                        current_pos=self.pos,
+                        before_optimization=True
+                    )
+
                 # Line 6: Update Distribution (Algorithm 3)
                 self.update_distribution()
+
+                # Capture AFTER optimization (steps 3 and 4 only)
+                if self.tree_visualizer and self.id == 1 and step in [15, 16]:
+                    import copy
+                    self.tree_visualizer.capture_action_distribution(
+                        robot_id=self.id,
+                        step=step,
+                        action_set=copy.deepcopy(self.action_set),
+                        action_probs=copy.deepcopy(self.action_probs),
+                        others_distributions=copy.deepcopy(self.others_distributions),
+                        current_pos=self.pos,
+                        before_optimization=False
+                    )
 
                 # Line 7 & 8
                 self.transmit()
                 self.receive()
 
             # Capture tree snapshot for visualization (Robot 1 at steps 2, 4, 6)
-            if self.tree_visualizer and self.id == 1 and step in [1, 2, 3, 4, 6]:
+            if self.tree_visualizer and self.id == 1 and step in [1, 2, 3, 4]:
                 self.tree_visualizer.capture_tree_snapshot(self.id, step, self.tree)
 
             # --- Execution ---

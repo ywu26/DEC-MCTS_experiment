@@ -302,6 +302,14 @@ def run_simulation():
                                                  save_path="tree_robot1_comparison.png",
                                                  layout='radial')
 
+    # Action distribution visualization (Algorithm 3)
+    print("\n" + "=" * 40)
+    print("VISUALIZING ACTION DISTRIBUTIONS")
+    print("=" * 40)
+    print("\nGenerating action distribution visualization (Algorithm 3)...")
+    tree_visualizer.visualize_action_distributions(robot_id=1, steps=[15, 16],
+                                                   save_path="action_distributions_robot1.png")
+
 
 if __name__ == "__main__":
     run_simulation()

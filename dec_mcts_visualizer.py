@@ -10,6 +10,8 @@ class TreeVisualizer:
 
     def __init__(self):
         self.snapshots = {}  # {(robot_id, step): tree_data}
+        self.action_distributions = {}  # {(robot_id, step): distribution_data}
+        self.final_tree = None
 
     def capture_tree_snapshot(self, robot_id, step, tree):
         """
@@ -48,6 +50,282 @@ class TreeVisualizer:
 
         self.final_tree = (robot_id, tree_data)
         print(f"[Final Tree] Captured for Robot {robot_id} with {len(root_states_by_step)} root positions")
+
+    def capture_action_distribution(self, robot_id, step, action_set, action_probs, others_distributions, current_pos,
+                                    before_optimization=False):
+        """
+        Capture action sequence probability distributions for Algorithm 3 visualization
+
+        Args:
+            robot_id: Robot ID
+            step: Current simulation step
+            action_set: List of action sequences (paths)
+            action_probs: List of probabilities for each action sequence
+            others_distributions: Dict of {other_robot_id: (action_set, action_probs)}
+            current_pos: Current position of the robot
+            before_optimization: If True, this is before optimization; if False, after
+        """
+        key_suffix = '_before' if before_optimization else '_after'
+        key = (robot_id, step, key_suffix)
+
+        data = {
+            'action_set': action_set,
+            'action_probs': action_probs,
+            'others_distributions': others_distributions,
+            'current_pos': current_pos,
+            'step': step,
+            'before_optimization': before_optimization
+        }
+
+        self.action_distributions[key] = data
+        stage = "BEFORE" if before_optimization else "AFTER"
+        print(
+            f"[Distribution] Captured for Robot {robot_id} at Step {step} ({stage} optimization): {len(action_set)} sequences, {len(others_distributions)} other robots")
+
+    def visualize_action_distributions(self, robot_id, steps, save_path=None):
+        """
+        Visualize action sequence probability distributions showing before/after optimization
+        Highlights the best path in red
+
+        Args:
+            robot_id: Robot ID to visualize
+            steps: List of steps to show (should be [3, 4])
+            save_path: Optional path to save figure
+        """
+        num_steps = len(steps)
+        fig = plt.figure(figsize=(24, 6 * num_steps))
+
+        for step_idx, step in enumerate(steps):
+            key_before = (robot_id, step, '_before')
+            key_after = (robot_id, step, '_after')
+
+            if key_before not in self.action_distributions or key_after not in self.action_distributions:
+                print(f"Missing before/after data for Robot {robot_id} at Step {step}")
+                continue
+
+            data_before = self.action_distributions[key_before]
+            data_after = self.action_distributions[key_after]
+
+            # Get data
+            action_set = data_after['action_set']
+            probs_before = data_before['action_probs']
+            probs_after = data_after['action_probs']
+            others_distributions = data_after['others_distributions']
+            current_pos = data_after['current_pos']
+
+            # Find best action index (after optimization)
+            best_idx = probs_after.index(max(probs_after))
+
+            # Create grid: [Paths Before | Prob Before | Paths After | Prob After | Others...]
+            num_others = len(others_distributions)
+            num_cols = 4 + num_others
+
+            gs = fig.add_gridspec(1, num_cols,
+                                  left=0.05, right=0.95,
+                                  top=0.95 - step_idx / num_steps,
+                                  bottom=0.95 - (step_idx + 1) / num_steps,
+                                  wspace=0.25,
+                                  width_ratios=[2, 1, 2, 1] + [1] * num_others)
+
+            # Panel 1: Paths BEFORE optimization
+            ax1 = fig.add_subplot(gs[0, 0])
+            self._draw_action_paths_highlighted(ax1, action_set, probs_before, current_pos, best_idx,
+                                                title=f"Step {step} - BEFORE Optimization\nAction Sequences")
+
+            # Panel 2: Probabilities BEFORE
+            ax2 = fig.add_subplot(gs[0, 1])
+            self._draw_probability_bars_highlighted(ax2, probs_before, best_idx,
+                                                    title=f"Probabilities\n(Before)",
+                                                    color='blue')
+
+            # Panel 3: Paths AFTER optimization
+            ax3 = fig.add_subplot(gs[0, 2])
+            self._draw_action_paths_highlighted(ax3, action_set, probs_after, current_pos, best_idx,
+                                                title=f"Step {step} - AFTER Optimization\nBest Path in Red")
+
+            # Panel 4: Probabilities AFTER
+            ax4 = fig.add_subplot(gs[0, 3])
+            self._draw_probability_bars_highlighted(ax4, probs_after, best_idx,
+                                                    title=f"Probabilities\n(After)",
+                                                    color='blue')
+
+            # Panel 5+: Other robots
+            for idx, (other_id, (other_actions, other_probs)) in enumerate(sorted(others_distributions.items())):
+                ax_other = fig.add_subplot(gs[0, 4 + idx])
+                self._draw_probability_bars(ax_other, other_probs,
+                                            title=f"Robot {other_id}\n(Received)",
+                                            color='orange')
+
+        if save_path:
+            plt.savefig(save_path, dpi=150, bbox_inches='tight')
+            print(f"Action distribution visualization saved to {save_path}")
+
+        plt.show()
+
+    def _draw_action_paths_highlighted(self, ax, action_set, action_probs, current_pos, best_idx, title):
+        """Draw action sequences with best path highlighted in red and action labels"""
+        ax.set_title(title, fontsize=11, fontweight='bold', pad=10)
+        ax.set_aspect('equal')
+        ax.grid(True, alpha=0.3)
+
+        # Find grid bounds
+        all_positions = [current_pos]
+        for path in action_set:
+            all_positions.extend(path)
+
+        if not all_positions:
+            return
+
+        xs = [p[0] for p in all_positions]
+        ys = [p[1] for p in all_positions]
+
+        # Add padding to ensure all content fits
+        min_x, max_x = min(xs) - 2, max(xs) + 2
+        min_y, max_y = min(ys) - 2, max(ys) + 2
+
+        ax.set_xlim(min_x, max_x)
+        ax.set_ylim(min_y, max_y)
+
+        # Draw non-best paths first (transparent blue)
+        for idx, (path, prob) in enumerate(zip(action_set, action_probs)):
+            if idx == best_idx:
+                continue  # Skip best, draw later
+
+            if len(path) < 2:
+                continue
+
+            xs = [p[0] for p in path]
+            ys = [p[1] for p in path]
+
+            # Transparent blue for non-best paths
+            ax.plot(xs, ys, 'o-', color='blue', alpha=0.15,
+                    linewidth=1.5, markersize=3, zorder=1)
+
+        # Draw best path (red, opaque)
+        if best_idx < len(action_set):
+            best_path = action_set[best_idx]
+            if len(best_path) >= 2:
+                xs = [p[0] for p in best_path]
+                ys = [p[1] for p in best_path]
+
+                ax.plot(xs, ys, 'o-', color='red', alpha=1.0,
+                        linewidth=3, markersize=6, zorder=3,
+                        label=f'Best Path (p={action_probs[best_idx]:.3f})')
+
+                # Add action sequence text
+                actions = self._get_action_sequence(best_path)
+                action_text = " → ".join(actions)
+
+                # Place text above the path
+                mid_idx = len(best_path) // 2
+                text_x = xs[mid_idx]
+                text_y = max(ys) - 3.5
+
+                ax.text(text_x, text_y, action_text,
+                        fontsize=9, ha='center', va='bottom',
+                        bbox=dict(boxstyle='round,pad=0.5', facecolor='yellow', alpha=0.8),
+                        fontweight='bold', zorder=5)
+
+        # Highlight current position
+        ax.plot(current_pos[0], current_pos[1], '*', color='darkgreen',
+                markersize=20, markeredgecolor='black', markeredgewidth=1,
+                label='Current Pos', zorder=4)
+
+        ax.legend(loc='upper right', fontsize=8)
+        ax.set_xlabel('X', fontsize=9)
+        ax.set_ylabel('Y', fontsize=9)
+
+    def _get_action_sequence(self, path):
+        """Convert a path to action labels"""
+        if len(path) < 2:
+            return ["STAY"]
+
+        actions = []
+        for i in range(len(path) - 1):
+            current = path[i]
+            next_pos = path[i + 1]
+
+            dx = next_pos[0] - current[0]
+            dy = next_pos[1] - current[1]
+
+            if dx == 0 and dy == 0:
+                actions.append("STAY")
+            elif dx == 0 and dy == 1:
+                actions.append("UP")
+            elif dx == 0 and dy == -1:
+                actions.append("DOWN")
+            elif dx == 1 and dy == 0:
+                actions.append("RIGHT")
+            elif dx == -1 and dy == 0:
+                actions.append("LEFT")
+            else:
+                actions.append(f"({dx},{dy})")
+
+        return actions
+
+    def _draw_probability_bars_highlighted(self, ax, probs, best_idx, title, color):
+        """Draw probability distribution with best action highlighted"""
+        ax.set_title(title, fontsize=10, fontweight='bold', pad=10)
+
+        indices = range(len(probs))
+        colors = ['red' if i == best_idx else color for i in indices]
+        alphas = [1.0 if i == best_idx else 0.6 for i in indices]
+
+        for i, (prob, c, alpha) in enumerate(zip(probs, colors, alphas)):
+            ax.barh(i, prob, color=c, alpha=alpha, edgecolor='black', linewidth=0.5)
+
+        ax.set_xlabel('Probability', fontsize=9)
+        ax.set_ylabel('Sequence #', fontsize=9)
+        ax.set_ylim(-0.5, len(probs) - 0.5)
+
+        # Set x-limit with extra space for text labels
+        max_prob = max(probs) if probs else 1.0
+        ax.set_xlim(0, max_prob * 1.25)  # Increased from 1.1 to 1.25 for text space
+
+        ax.invert_yaxis()
+        ax.grid(True, axis='x', alpha=0.3)
+
+        # Add probability values on bars
+        for i, prob in enumerate(probs):
+            if prob > 0.01:  # Only show if significant
+                # Position text slightly inside the bar if it fits, otherwise outside
+                text_x = min(prob - 0.01, prob * 0.95) if prob > 0.1 else prob + 0.01
+                text_ha = 'right' if prob > 0.1 else 'left'
+
+                ax.text(text_x, i, f'{prob:.3f}',
+                        va='center', ha=text_ha, fontsize=8,
+                        fontweight='bold' if i == best_idx else 'normal',
+                        color='white' if (prob > 0.1 and i == best_idx) else 'black')
+
+    def _draw_probability_bars(self, ax, probs, title, color):
+        """Draw probability distribution as bar chart"""
+        ax.set_title(title, fontsize=10, fontweight='bold', pad=10)
+
+        indices = range(len(probs))
+        ax.barh(indices, probs, color=color, alpha=0.7, edgecolor='black', linewidth=0.5)
+
+        ax.set_xlabel('Probability', fontsize=9)
+        ax.set_ylabel('Sequence #', fontsize=9)
+        ax.set_ylim(-0.5, len(probs) - 0.5)
+
+        # Set x-limit with extra space for text labels
+        max_prob = max(probs) if probs else 1.0
+        ax.set_xlim(0, max_prob * 1.25)  # Extra space for labels
+
+        ax.invert_yaxis()
+        ax.grid(True, axis='x', alpha=0.3)
+
+        # Add probability values on bars
+        for i, prob in enumerate(probs):
+            if prob > 0.01:  # Only show if significant
+                # Position text appropriately
+                text_x = min(prob - 0.01, prob * 0.95) if prob > 0.1 else prob + 0.01
+                text_ha = 'right' if prob > 0.1 else 'left'
+                text_color = 'white' if prob > 0.1 else 'black'
+
+                ax.text(text_x, i, f'{prob:.3f}',
+                        va='center', ha=text_ha, fontsize=7,
+                        color=text_color)
 
     def _extract_tree_data(self, root, tree):
         """
