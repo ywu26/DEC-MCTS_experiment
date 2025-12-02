@@ -7,6 +7,7 @@ import threading
 import time
 
 from dec_mcts_robot import DecMCTSRobot, GridEnvironment, DecentralizedCommunicationChannel
+from dec_mcts_visualizer import TreeVisualizer
 
 # --- Configuration ---
 GRID_SIZE = 25
@@ -223,13 +224,16 @@ def run_simulation():
     comms = DecentralizedCommunicationChannel(NUM_ROBOTS)
     logger = SimpleLogger()
 
+    # Create tree visualizer
+    tree_visualizer = TreeVisualizer()
+
     robots = []
     print("Initializing Robots...")
     for i in range(NUM_ROBOTS):
         while True:
             sx, sy = random.randint(0, GRID_SIZE - 1), random.randint(0, GRID_SIZE - 1)
             if env.is_valid((sx, sy)): break
-        robots.append(DecMCTSRobot(i, (sx, sy), env, comms, CONFIG, logger))
+        robots.append(DecMCTSRobot(i, (sx, sy), env, comms, CONFIG, logger, tree_visualizer))
         # Log initial pos at step 0
         logger.update_trajectory(i, (sx, sy), 0)
 
@@ -246,6 +250,14 @@ def run_simulation():
 
     duration = time.time() - start_time
     print(f"\nSimulation Finished in {duration:.2f}s")
+
+    # Capture final tree state with root positions for Robot 1
+    robot_1 = robots[1]
+    tree_visualizer.capture_final_tree_with_roots(
+        robot_id=1,
+        tree=robot_1.tree,
+        root_states_by_step=robot_1.root_states_by_step
+    )
 
     # Statistics
     total_val_start = sum(initial_rewards.values())
@@ -269,6 +281,26 @@ def run_simulation():
 
     # Visualization (Video)
     create_animation(env, logger.trajectories, initial_rewards)
+
+    # Visualize MCTS Trees for Robot 1 at steps 2, 4, 6
+    print("\n" + "=" * 40)
+    print("VISUALIZING MCTS TREES")
+    print("=" * 40)
+
+    # Individual tree visualizations (from each step's root)
+    print("\nGenerating tree visualizations from each step's root...")
+    tree_visualizer.visualize_tree(robot_id=1, step=1, max_depth=5,
+                                   save_path="tree_robot1_step2.png", layout='radial')
+    tree_visualizer.visualize_tree(robot_id=1, step=2, max_depth=5,
+                                   save_path="tree_robot1_step4.png", layout='radial')
+    tree_visualizer.visualize_tree(robot_id=1, step=3, max_depth=5,
+                                   save_path="tree_robot1_step6.png", layout='radial')
+
+    # Comparison visualization (same final tree, different root markers)
+    print("\nGenerating comparison view (final tree with different roots marked)...")
+    tree_visualizer.visualize_rollout_comparison(robot_id=1, steps=[1, 2, 3],
+                                                 save_path="tree_robot1_comparison.png",
+                                                 layout='radial')
 
 
 if __name__ == "__main__":

@@ -76,7 +76,7 @@ class DecentralizedCommunicationChannel:
 
 # --- Robot Agent ---
 class DecMCTSRobot(threading.Thread):
-    def __init__(self, robot_id, start_pos, env, comms, config, logger=None):
+    def __init__(self, robot_id, start_pos, env, comms, config, logger=None, tree_visualizer=None):
         super().__init__()
         self.id = robot_id
         self.pos = start_pos
@@ -84,7 +84,11 @@ class DecMCTSRobot(threading.Thread):
         self.comms = comms
         self.config = config
         self.logger = logger
+        self.tree_visualizer = tree_visualizer
         self.daemon = True
+
+        # Track root states for visualization
+        self.root_states_by_step = {}
 
         self.tree = MCTSTree(
             start_state=start_pos,
@@ -166,6 +170,9 @@ class DecMCTSRobot(threading.Thread):
     def run(self):
         for step in range(self.config['SIMULATION_STEPS']):
 
+            # Track root state for this step
+            self.root_states_by_step[step] = self.tree.current_root.state
+
             # --- Algorithm 1 ---
             # Line 3
             self.select_set_of_sequences()
@@ -183,6 +190,10 @@ class DecMCTSRobot(threading.Thread):
                 # Line 7 & 8
                 self.transmit()
                 self.receive()
+
+            # Capture tree snapshot for visualization (Robot 1 at steps 2, 4, 6)
+            if self.tree_visualizer and self.id == 1 and step in [1, 2, 3, 4, 6]:
+                self.tree_visualizer.capture_tree_snapshot(self.id, step, self.tree)
 
             # --- Execution ---
             # Pick best path based on optimized probability
